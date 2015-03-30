@@ -1,4 +1,5 @@
 require 'active_record'
+
 ActiveRecord::Base.raise_in_transactional_callbacks = true if ActiveRecord::VERSION::STRING >= '4.2'
 
 require 'minitest/autorun'
@@ -92,7 +93,6 @@ class ParanoiaTest < test_framework
     assert_equal true, model.deleted_at.nil?
 
     assert_equal 0, model.class.count
-    assert_equal 0, model.class.unscoped.count
   end
 
   # Anti-regression test for #81, which would've introduced a bug to break this test.
@@ -135,8 +135,8 @@ class ParanoiaTest < test_framework
 
     assert_equal false, model.deleted_at.nil?
 
-    assert_equal 0, model.class.count
-    assert_equal 1, model.class.unscoped.count
+    assert_equal 1, model.class.count
+    assert_equal 0, model.class.paranoia.count
   end
 
   def test_update_columns_on_paranoia_destroyed
@@ -149,16 +149,28 @@ class ParanoiaTest < test_framework
   def test_scoping_behavior_for_paranoid_models
     parent1 = ParentModel.create
     parent2 = ParentModel.create
-    p1 = ParanoidModel.create(:parent_model => parent1)
-    p2 = ParanoidModel.create(:parent_model => parent2)
+    p1 = ParanoidModel.create
+    p2 = ParanoidModel.create
+    parent1.paranoid_models << p1
+    parent2.paranoid_models << p2
     p1.destroy
     p2.destroy
-    assert_equal 0, parent1.paranoid_models.count
+    assert_equal 1, parent1.paranoid_models.count
+    assert_equal 0, parent1.paranoid_models.paranoia.count
     assert_equal 1, parent1.paranoid_models.only_deleted.count
     assert_equal 1, parent1.paranoid_models.deleted.count
+    assert_equal [p1], parent1.paranoid_models
+    assert_equal [], parent1.paranoid_models.paranoia
+
     p3 = ParanoidModel.create(:parent_model => parent1)
-    assert_equal 2, parent1.paranoid_models.with_deleted.count
-    assert_equal [p1,p3], parent1.paranoid_models.with_deleted
+    parent1.paranoid_models << p3
+
+    assert_equal 2, parent1.paranoid_models.count
+    assert_equal 1, parent1.paranoid_models.paranoia.count
+    assert_equal 1, parent1.paranoid_models.only_deleted.count
+    assert_equal 1, parent1.paranoid_models.deleted.count
+    assert_equal [p1,p3], parent1.paranoid_models
+    assert_equal [p3], parent1.paranoid_models.paranoia
   end
 
   def test_destroy_behavior_for_custom_column_models
@@ -172,8 +184,8 @@ class ParanoiaTest < test_framework
     assert_equal false, model.destroyed_at.nil?
     assert model.paranoia_destroyed?
 
-    assert_equal 0, model.class.count
-    assert_equal 1, model.class.unscoped.count
+    assert_equal 1, model.class.count
+    assert_equal 0, model.class.paranoia.count
     assert_equal 1, model.class.only_deleted.count
     assert_equal 1, model.class.deleted.count
   end
@@ -193,8 +205,8 @@ class ParanoiaTest < test_framework
     assert DateTime.new(0) != model.deleted_at
     assert model.paranoia_destroyed?
 
-    assert_equal 0, model.class.count
-    assert_equal 1, model.class.unscoped.count
+    assert_equal 1, model.class.count
+    assert_equal 0, model.class.paranoia.count
     assert_equal 1, model.class.only_deleted.count
     assert_equal 1, model.class.deleted.count
 
@@ -203,7 +215,7 @@ class ParanoiaTest < test_framework
     assert !model.destroyed?
 
     assert_equal 1, model.class.count
-    assert_equal 1, model.class.unscoped.count
+    assert_equal 1, model.class.paranoia.count
     assert_equal 0, model.class.only_deleted.count
     assert_equal 0, model.class.deleted.count
   end
@@ -217,8 +229,8 @@ class ParanoiaTest < test_framework
 
     assert_equal false, model.deleted_at.nil?
 
-    assert_equal 0, model.class.count
-    assert_equal 1, model.class.unscoped.count
+    assert_equal 1, model.class.count
+    assert_equal 0, model.class.paranoia.count
   end
 
   def test_destroy_behavior_for_has_one_with_build_and_validation_error
@@ -254,8 +266,8 @@ class ParanoiaTest < test_framework
     child.destroy
     assert_equal false, child.deleted_at.nil?
 
-    assert_equal 0, parent.related_models.count
-    assert_equal 1, parent.related_models.unscoped.count
+    assert_equal 1, parent.related_models.count
+    assert_equal 0, parent.related_models.paranoia.count
   end
 
   def test_default_scope_for_has_many_through_relationships
@@ -276,13 +288,19 @@ class ParanoiaTest < test_framework
     job2 = Job.create :employer => employer, :employee => employee2
     employee2.destroy
     assert_equal 2, employer.jobs.count
-    assert_equal 1, employer.employees.count
+    assert_equal 2, employer.jobs.paranoia.count
+    assert_equal 2, employer.employees.count
+    assert_equal 1, employer.employees.paranoia.count
 
     job.destroy
-    assert_equal 1, employer.jobs.count
-    assert_equal 0, employer.employees.count
-    assert_equal 0, employee.jobs.count
-    assert_equal 0, employee.employers.count
+    assert_equal 2, employer.jobs.count
+    assert_equal 1, employer.jobs.paranoia.count
+    assert_equal 2, employer.employees.count
+    assert_equal 1, employer.employees.paranoia.count
+    assert_equal 1, employee.jobs.count
+    assert_equal 0, employee.jobs.paranoia.count
+    assert_equal 1, employee.employers.count
+    assert_equal 0, employee.employers.paranoia.count
   end
 
   def test_delete_behavior_for_callbacks
@@ -437,7 +455,7 @@ class ParanoiaTest < test_framework
     child = parent.very_related_models.create
     parent.destroy
     parent.really_destroy!
-    refute RelatedModel.unscoped.exists?(child.id)
+    refute RelatedModel.exists?(child.id)
   end
 
   def test_real_destroy_dependent_destroy_after_normal_destroy_does_not_delete_other_children
@@ -540,9 +558,9 @@ class ParanoiaTest < test_framework
     assert_equal true, hasOne.reload.deleted_at.nil?
     assert_equal true, belongsTo.reload.deleted_at.nil?, "#{belongsTo.deleted_at}"
     assert_equal true, notParanoidModel.destroyed?
-    assert ParanoidModelWithBelong.with_deleted.reload.count != 0, "There should be a record"
-    assert ParanoidModelWithAnthorClassNameBelong.with_deleted.reload.count != 0, "There should be an other record"
-    assert ParanoidModelWithForeignKeyBelong.with_deleted.reload.count != 0, "There should be a foreign_key record"
+    assert ParanoidModelWithBelong.count != 0, "There should be a record"
+    assert ParanoidModelWithAnthorClassNameBelong.count != 0, "There should be an other record"
+    assert ParanoidModelWithForeignKeyBelong.count != 0, "There should be a foreign_key record"
   end
 
   def test_new_restore_with_has_one_association
@@ -564,16 +582,16 @@ class ParanoiaTest < test_framework
     assert_equal false, belongsTo.deleted_at.nil?
 
     # Does it restore has_one associations?
-    newHasOne = ParanoidModelWithHasOne.with_deleted.find(hasOne.id)
+    newHasOne = ParanoidModelWithHasOne.find(hasOne.id)
     newHasOne.restore(:recursive => true)
     newHasOne.save!
 
     assert_equal true, hasOne.reload.deleted_at.nil?
     assert_equal true, belongsTo.reload.deleted_at.nil?, "#{belongsTo.deleted_at}"
     assert_equal true, notParanoidModel.destroyed?
-    assert ParanoidModelWithBelong.with_deleted.reload.count != 0, "There should be a record"
-    assert ParanoidModelWithAnthorClassNameBelong.with_deleted.reload.count != 0, "There should be an other record"
-    assert ParanoidModelWithForeignKeyBelong.with_deleted.reload.count != 0, "There should be a foreign_key record"
+    assert ParanoidModelWithBelong.count != 0, "There should be a record"
+    assert ParanoidModelWithAnthorClassNameBelong.count != 0, "There should be an other record"
+    assert ParanoidModelWithForeignKeyBelong.count != 0, "There should be a foreign_key record"
   end
 
   def test_model_restore_with_has_one_association
@@ -601,9 +619,9 @@ class ParanoiaTest < test_framework
     assert_equal true, hasOne.reload.deleted_at.nil?
     assert_equal true, belongsTo.reload.deleted_at.nil?, "#{belongsTo.deleted_at}"
     assert_equal true, notParanoidModel.destroyed?
-    assert ParanoidModelWithBelong.with_deleted.reload.count != 0, "There should be a record"
-    assert ParanoidModelWithAnthorClassNameBelong.with_deleted.reload.count != 0, "There should be an other record"
-    assert ParanoidModelWithForeignKeyBelong.with_deleted.reload.count != 0, "There should be a foreign_key record"
+    assert ParanoidModelWithBelong.count != 0, "There should be a record"
+    assert ParanoidModelWithAnthorClassNameBelong.count != 0, "There should be an other record"
+    assert ParanoidModelWithForeignKeyBelong.count != 0, "There should be a foreign_key record"
   end
 
   def test_restore_with_nil_has_one_association
@@ -718,13 +736,17 @@ class ParanoiaTest < test_framework
 
     parent.destroy
 
-    assert_equal 0, parent.very_related_models.count
-    assert_equal 0, parent.very_related_models.size
-
+    assert_equal 3, parent.very_related_models.count
+    assert_equal 3, parent.very_related_models.reload.size
+    assert_equal 0, parent.very_related_models.paranoia.count
+    assert_equal 0, parent.very_related_models.paranoia.size
+  
     parent.restore(recursive: true)
 
     assert_equal 3, parent.very_related_models.count
-    assert_equal 3, parent.very_related_models.size
+    assert_equal 3, parent.very_related_models.reload.size
+    assert_equal 3, parent.very_related_models.paranoia.count
+    assert_equal 3, parent.very_related_models.paranoia.size
   end
 
   def test_model_without_db_connection
@@ -741,11 +763,13 @@ class ParanoiaTest < test_framework
 
     parent.destroy
 
-    assert_equal 0, polymorphic.class.count
+    assert_equal 1, polymorphic.class.count
+    assert_equal 0, polymorphic.class.paranoia.count
 
     parent.restore(recursive: true)
 
     assert_equal 1, polymorphic.class.count
+    assert_equal 1, polymorphic.class.paranoia.count
   end
 
   # Ensure that we're checking parent_type when restoring
@@ -756,11 +780,13 @@ class ParanoiaTest < test_framework
     parent.destroy
     polymorphic.destroy
 
-    assert_equal 0, polymorphic.class.count
+    assert_equal 1, polymorphic.class.count
+    assert_equal 0, polymorphic.class.paranoia.count
 
     parent.restore(recursive: true)
 
-    assert_equal 0, polymorphic.class.count
+    assert_equal 1, polymorphic.class.count
+    assert_equal 0, polymorphic.class.paranoia.count
   end
 
   def test_counter_cache_column_update_on_destroy#_and_restore_and_really_destroy

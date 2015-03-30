@@ -20,16 +20,8 @@ module Paranoia
   module Query
     def paranoid? ; true ; end
 
-    def with_deleted
-      if ActiveRecord::VERSION::STRING >= "4.1"
-        unscope where: paranoia_column
-      else
-        all.tap { |x| x.default_scoped = false }
-      end
-    end
-
     def only_deleted
-      with_deleted.where.not(table_name => { paranoia_column => paranoia_sentinel_value} )
+      where.not(table_name => { paranoia_column => paranoia_sentinel_value} )
     end
     alias :deleted :only_deleted
 
@@ -76,6 +68,14 @@ module Paranoia
               end
             end
           end
+          # Ensure the associations to be eager loaded after soft/hard deletion
+          # Note: unscoped method was used previous to replacing default_scope with paranoia scope.
+          # unscoped method eager loads the data from database, thus didn't require resetting the cache
+          _reflections.each do |name, reflection|
+            if reflection.collection? && self.association(reflection.name).options[:dependent] == :destroy
+              self.association(reflection.name).reset
+            end
+          end          
         end
         result
       end
@@ -182,7 +182,7 @@ class ActiveRecord::Base
           # .paranoid? will work for both instances and classes
           if association_data && association_data.paranoid?
             if reflection.collection?
-              association_data.with_deleted.each(&:really_destroy!)
+              association_data.each(&:really_destroy!)
             else
               association_data.really_destroy!
             end
@@ -201,7 +201,16 @@ class ActiveRecord::Base
     def self.paranoia_scope
       where(table_name => { paranoia_column => paranoia_sentinel_value })
     end
-    default_scope { paranoia_scope }
+    scope :paranoia, -> { paranoia_scope }
+
+    # Populate paranoia_column on initial creation
+    # Note: deault_scope initializes values for new models.
+    # By replacing deault_scope with paranoia scope, we now need 
+    after_initialize {
+      if paranoia_sentinel_value != nil
+        write_attribute(self.paranoia_column, paranoia_sentinel_value)
+      end
+    }
 
     before_restore {
       self.class.notify_observers(:before_restore, self) if self.class.respond_to?(:notify_observers)
